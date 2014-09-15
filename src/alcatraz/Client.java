@@ -18,38 +18,36 @@ import java.rmi.AlreadyBoundException;
 import java.rmi.Naming;
 import java.rmi.RemoteException;
 import java.rmi.server.UnicastRemoteObject;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-/**
- * A test class initializing a local Alcatraz game -- illustrating how
- * to use the Alcatraz API.
- */
 public class Client extends UnicastRemoteObject implements IClient, MoveListener, Serializable {
     private static final long serialVersionUID = 1L;
 
-    private Alcatraz alc = null;
+    private static final ExecutorService THREAD_POOL = Executors.newCachedThreadPool();
 
-    private static Client client;
+    private Alcatraz game = null;
 
     private static WorkerThread workerThread = null;
 
-    private static IServer alcatrazServerRef = null;                // Client Stub
-    private static IServer serverRefList[] = new IServer[10];
-    private static IClient refOtherList[] = new IClient[3];
-    private static IClient clientRefList[] = new IClient[4];
+    private List<IServer> servers = new LinkedList<IServer>();
+    private static IClient otherClients[] = new IClient[3];
 
-    private static String playerName;
-    private static int option = 0;
-    private int myID = 0, playerNumber = 0, tempPlayerNumber = 0;
+    private String playerName;
+    private int playerCount = 0;
+    private int tempPlayerNumber = 0;
 
-    private static int nextMovePlayerId = 0;
-    private static int nextMovePrisonerId = 0;
-    private static int nextMoveRowOrCol = 0;
-    private static int nextMoveRow = 0;
-    private static int nextMoveCol = 0;
+    private int nextMovePlayerId = 0;
+    private int nextMovePrisonerId = 0;
+    private int nextMoveRowOrCol = 0;
+    private int nextMoveRow = 0;
+    private int nextMoveCol = 0;
 
     private static boolean signedOut = false;
 
-    private boolean startGame = false;
+    private boolean gameStarted = false;
     private boolean receivedMessage = false;
     private int receiver = 0;
     private static int counter = 0;
@@ -58,14 +56,6 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
 
     public Client() throws RemoteException {
 
-    }
-
-    public int getNumPlayer() {
-        return playerNumber;
-    }
-
-    public void setNumPlayer(int numPlayer) {
-        this.playerNumber = numPlayer;
     }
 
     public void gameWon(Player player) {
@@ -78,16 +68,8 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
     
     /* Read name from console */
 
-    public void setName() {
-        BufferedReader console = new BufferedReader(new InputStreamReader(System.in));
-
-        System.out.print("What is your name?:\n");
-
-        try {
-            playerName = console.readLine();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    public void setName(String name) {
+        playerName = name;
     }
 
     public String getName() throws RemoteException {
@@ -95,96 +77,87 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
     }
 
     public void saveServerRef(IServer serverRef) throws RemoteException {
-        serverRefList[counter] = serverRef;
-        counter++;
-
-        System.out.println(counter + ". Server");
+        servers.add(serverRef);
     }
 
     /**
      * Each client gets all client-references and number of players and saves this information
      */
-    public void deliverReference(IClient[] refList, int playerNumber) throws RemoteException {
-        alc = new Alcatraz();
+    public void deliverReference(IClient[] refList, int playerCount) throws RemoteException {
+        game = new Alcatraz();
 
-        clientRefList = refList;
-        
-    	/* detect own ID between 0 to 3 */
-
+        /* detect own ID between 0 to 3 */
         int j = 0;
-        while (!clientRefList[j].getName().equals(playerName)) j++;
-
-        myID = j;
-
-        client.setNumPlayer(playerNumber);
-
-        alc.init(this.playerNumber, myID);
+        while (!refList[j].getName().equals(playerName)) j++;
+        int myID = j;
+        this.playerCount = playerCount;
+        game.init(this.playerCount, myID);
 
         int k = 0;
-        for (int i = 0; i < this.playerNumber; i++) {
-            alc.getPlayer(i).setName(clientRefList[i].getName());
+        for (int i = 0; i < this.playerCount; i++) {
+            game.getPlayer(i).setName(refList[i].getName());
 
             if (i != myID) {
-                refOtherList[k] = clientRefList[i];
+                otherClients[k] = refList[i];
                 k++;
             }
         }
 
-        alc.showWindow();
-
-        alc.addMoveListener(client); // A MoveListener (Client) is added by the game Alcatraz 
-
-        alc.start();
+        game.showWindow();
+        game.addMoveListener(this); // A MoveListener (Client) is added by the game Alcatraz 
+        game.start();
     }
 
     public void startGame() {
-        int i = 0;
-        while (!startGame && i < counter) {
+        for(IServer server : servers) {
             try {
-                serverRefList[i].startAlcatraz(client);
-                startGame = true;
-                System.out.printf("%s has successfully started the GAME.%n", client.getName());
+                server.startAlcatraz(this);
+                gameStarted = true;
+                System.out.printf("%s has successfully started the GAME.%n", getName());
+                return;
             } catch (RemoteException e) {
-                i++;
+                // ignore and try next
             } catch (Exception e) {
-                System.err.println("Not enough player. Please wait.\n");
+                System.err.println("Error starting game: " + e.getMessage());
                 return;
             }
         }
-
-        if (!startGame) {
+        
+        if (!gameStarted) {
             System.out.println("No server available to start.");
         }
     }
 
+    public void registerWithServer(IServer server) throws Exception {
+        server.register(this);
+    }
+
     public void signOut() {
-        int i = 0;
-        while (signedOut == false && i < counter) {
+        for (IServer server : servers) {
             try {
-                serverRefList[i].signOut(client);
+                server.signOut(this);
                 signedOut = true;
                 System.out.println("successfully signed out.");
-            } catch (RemoteException e) {
-                i++;
+                return;              
+            } catch(RemoteException e) {
+                // ignore and try next server
             }
         }
 
-        if (signedOut == false) {
-            System.out.println("No server available to sign out.");
-        }
+        System.out.println("No server available to sign out.");
     }
 
     public void signIn() {
-        int i = 0;
-        while (signedOut == true && i < counter) {
+        for (IServer server : servers) {
             try {
-                serverRefList[i].register(client);
+                server.register(this);
                 signedOut = false;
                 System.out.println("successfully signed in.");
+                return;
             } catch (RemoteException e) {
-                e.printStackTrace();
+                // ignore and try next
             } catch (Exception e) {
-                System.out.println("The name exists already. Please give an another name.\n");
+                System.out.println("Error registering with the server: " + e.getMessage());
             }
         }
     }
@@ -197,12 +170,13 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
 
     public void moveDone(Player player, Prisoner prisoner, int rowOrCol, int row, int col) {
         twoPhaseCommit = 1;
-        tempPlayerNumber = getNumPlayer() - 1;
+        tempPlayerNumber = playerCount - 1;
 
-        System.out.println("moving " + prisoner + " to " + (rowOrCol == Alcatraz.ROW ? "row" : "col") + " " + (rowOrCol == Alcatraz.ROW ? row : col));
+        System.out.printf("moving %s to %s %d%n", prisoner, rowOrCol == Alcatraz.ROW ? "row" : "col", rowOrCol == Alcatraz.ROW ? row : col);
 
         workerThread = new WorkerThread(player.getId(), prisoner.getId(), rowOrCol, row, col);    // create new thread
 
+        // TODO: Thread.run() doesn't actually run a separate thread
         workerThread.run();
     }     
     
@@ -212,7 +186,7 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
      */
 
     public void doMove(int playerId, int prisonerId, int rowOrCol, int row, int col, IClient ref) throws RemoteException {
-        System.out.println(client.getName() + " becomes the doMove Message from " + ref.getName());
+        System.out.println(getName() + " received the doMove Message from " + ref.getName());
 
         twoPhaseCommit = 2;
 
@@ -223,20 +197,20 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
         nextMoveCol = col;
 
         try {
-            ref.receiveVoteCommit(client);
+            System.out.printf("%s sends voteCommit to %s%n", getName(), ref.getName());
+            ref.receiveVoteCommit(this);
         } catch (RemoteException e) {
-            e.printStackTrace();
+            System.err.println("Error sending voteCommit: " + e.getMessage());
         }
 
-        System.out.println(client.getName() + " sends voteCommit to " + ref.getName());
     }
 
     public void receiveVoteCommit(IClient ref) throws RemoteException {
-        System.out.println(client.getName() + " got the voteCOmmit message from " + ref.getName());
+        System.out.println(getName() + " got the voteCommit message from " + ref.getName());
 
         if (tempPlayerNumber > 0) {
-            for (int i = 0; i < getNumPlayer() - 1; i++) {
-                if (refOtherList[i].equals(ref)) {
+            for (int i = 0; i < playerCount - 1; i++) {
+                if (otherClients[i].equals(ref)) {
                     tempPlayerNumber--;
                     receivedMessage = true;
                     receiver = i;
@@ -245,33 +219,26 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
         }
 
         if (tempPlayerNumber == 0) {
-            System.out.println(client.getName() + " got all voteCOmmit messages from clients ");
-
-            tempPlayerNumber = getNumPlayer() - 1;
-
+            System.out.println(getName() + " got all voteCommit messages from clients ");
+            tempPlayerNumber = playerCount - 1;
             twoPhaseCommit = 3;
-
             workerThread.run();
         }
     }
 
     public void sendGlobalCommit(IClient ref) throws RemoteException {
-        System.out.println(client.getName() + " got the globalCOmmit message from " + ref.getName());
-
-        alc.doMove(alc.getPlayer(nextMovePlayerId), alc.getPrisoner(nextMovePrisonerId), nextMoveRowOrCol, nextMoveRow, nextMoveCol);
-
-        System.out.println(client.getName() + " sends an ACK to " + ref.getName());
-
+        System.out.println(getName() + " got the globalCommit message from " + ref.getName());
+        game.doMove(game.getPlayer(nextMovePlayerId), game.getPrisoner(nextMovePrisonerId), nextMoveRowOrCol, nextMoveRow, nextMoveCol);
+        System.out.println(getName() + " sends an ACK to " + ref.getName());
         twoPhaseCommit = 4;
-
-        ref.receiveACK(client);
+        ref.receiveACK(this);
     }
 
     public void receiveACK(IClient ref) throws RemoteException {
-        System.out.println(client.getName() + " got the ACK message from " + ref.getName());
+        System.out.println(getName() + " got the ACK message from " + ref.getName());
 
-        for (int i = 0; i < getNumPlayer() - 1; i++) {
-            if (refOtherList[i].equals(ref)) {
+        for (int i = 0; i < playerCount - 1; i++) {
+            if (otherClients[i].equals(ref)) {
                 tempPlayerNumber--;
                 receivedMessage = true;
                 receiver = i;
@@ -279,7 +246,7 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
         }
 
         if (tempPlayerNumber == 0) {
-            System.out.println(client.getName() + " got all ACK from clients.");
+            System.out.println(getName() + " got all ACK from clients.");
         }
     }    
     
@@ -296,25 +263,23 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
 
         @Override
         public void run() {
-            for (int i = 0; i < client.getNumPlayer() - 1; i++) {
+            for (int i = 0; i < Client.this.playerCount - 1; i++) {
                 while (!receivedMessage || receiver != i) {
                     if (twoPhaseCommit == 1) {
                         try {
-                            System.out.printf("%s sends doMove message to %s%n", client.getName(), refOtherList[i].getName());
-                            refOtherList[i].doMove(nextMovePlayerId, nextMovePrisonerId, nextMoveRowOrCol, nextMoveRow, nextMoveCol, client);
+                            System.out.printf("%s sends doMove message to %s%n", Client.this.getName(), otherClients[i].getName());
+                            otherClients[i].doMove(nextMovePlayerId, nextMovePrisonerId, nextMoveRowOrCol, nextMoveRow, nextMoveCol, Client.this);
                         } catch (RemoteException e) {
                             System.err.println("Error sending doMove message: " + e.getMessage());
-                            // TODO: Should we terminate the program here?
                         }
                     }
 
                     if (twoPhaseCommit == 3) {
                         try {
-                            System.out.printf("%s is sending global commit message to all clients%n", client.getName());
-                            refOtherList[i].sendGlobalCommit(client);
+                            System.out.printf("%s is sending global commit message to all clients%n", Client.this.getName());
+                            otherClients[i].sendGlobalCommit(Client.this);
                         } catch (RemoteException e) {
                             System.err.println("Error sending global commit: " + e.getMessage());
-                            // TODO: Should we terminate the program here?
                         }
                     }
 
@@ -332,39 +297,60 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
     }
 
     public static void main(String[] args) throws RemoteException, AlreadyBoundException {
-        client = new Client();
+        Client client = new Client();
         BufferedReader console = new BufferedReader(new InputStreamReader(System.in));
 
         // Client looks up the reference of the AlcatrazServer (service) and asks the RegisterServer. 
         // The IP-address, the port of RegisterServer and the name of AlcatrazServer are familiar.  args[0] = IPAddress
 
+        IServer server = null;
         for (String serverToTry : args) {
-            if (connectToServer(serverToTry)) {
+            server = connectToServer(serverToTry);
+            if (server != null) {
                 break;
             }
         }
+        if (server == null) {
+            System.err.println("No server could be reached");
+            System.exit(7);
+        }
+        System.out.println("Connected to server: " + server);
 
-        System.out.println("Got reference of AlcatrazServer.");
-
-        client.setName();
+        String playerName;
+        try {
+            System.out.print("What is your name?: ");
+            playerName = console.readLine();
+            client.setName(playerName);
+        } catch (IOException e) {
+            System.err.println("Error reading input from stdin");
+            System.exit(2);
+        }
 
         // Client registers by the AlcatrazServer and sends its reference to AlcatrazServer
 
         try {
-            alcatrazServerRef.register(client);
+            client.registerWithServer(server);
         } catch (Exception e) {
             System.err.printf("Error registering the client with the server: %s%n", e.getMessage());
             System.exit(3);
         }
 
+        showMenu(client, console);
+
+        client.signOut();
+    }
+
+    private static void showMenu(Client client, BufferedReader console) {
+        String playerName;
         boolean running = true;
         while (running) {
-            System.out.println("Please enter\n\t1 for sign out and exit\n\t2 for start the game\n\t3 for sign in or\n\t4 for sign out.\n");
+            System.out.println("Please enter\n\t1 for sign out and exit\n\t2 for start the game\n\t3 for choosing a new name or\n\t4 for sign out.\n");
 
             try {
                 switch (Integer.valueOf(console.readLine())) {
                     case 1:
                         running = false;
+                        client.signOut();
                         break;
                     case 2:
                         if (signedOut) {
@@ -375,7 +361,16 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
                         break;
                     case 3:
                         client.signOut();
-                        client.setName();
+
+                        try {
+                            System.out.print("What is your name?: ");
+                            playerName = console.readLine();
+                            client.setName(playerName);
+                        } catch (IOException e) {
+                            System.err.println("Error reading input from stdin");
+                            System.exit(2);
+                        }
+
                         client.signIn();
                         break;
                     case 4:
@@ -390,28 +385,24 @@ public class Client extends UnicastRemoteObject implements IClient, MoveListener
                 System.exit(2);
             }
         }
-
-        client.signOut();
     }
 
     /**
      * Try to connect to the given registry server
      *
      * @param serverAddress IP address or DNS name of the RMI server
-     * @return true if successfully connected to the server, false in case of an error
+     * @return the server reference, or null if the connect could not be established
      */
-    private static boolean connectToServer(String serverAddress) {
+    private static IServer connectToServer(String serverAddress) {
         String rmiUrl = "//" + serverAddress + ":1099/AlcatrazServer";
         try {
             System.out.printf("Trying to connect to server: %s%n", serverAddress);
-            alcatrazServerRef = (IServer) Naming.lookup(rmiUrl);
-            return true;
+            return (IServer) Naming.lookup(rmiUrl);
         } catch (MalformedURLException e) {
             System.err.printf("Invalid RMI URL: %s (%s)%n", rmiUrl, e.getMessage());
-            return false;
         } catch (Exception e) {
             System.err.printf("Error connecting to registry server %s: %s%n", serverAddress, e.getMessage());
-            return false;
         }
+        return null;
     }
 }
